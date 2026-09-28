@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# smart_backup.py - Respaldo Modular v4.1 (FULL BACKUP INTEGRADO + VALIDACIÓN)
+# smart_backup.py - Respaldo Modular v5.2 (FULL BACKUP INTEGRADO + EXCLUSIONES + INSTRUCCIONES)
 # Autor: Alex Callejas
 #
 
@@ -65,12 +65,125 @@ def get_archive_dir(base_dest, prefix):
             return target_dir
         counter += 1
 
-def backup_system(dest_path):
+def get_installed_software():
     print("\n============================================================")
-    print("==> INICIANDO RESPALDO DE SISTEMA")
+    print("==> SELECCIÓN DE SOFTWARE PARA RESTAURACIÓN")
+    print("============================================================")
+
+    # Lista blanca declarativa de software por categorías
+    software_catalog = {
+        "dnf": {
+            "Sistema y Escritorio": ["conky", "gnome-tweaks", "gnome-extensions-app", "virt-manager"],
+            "Desarrollo y Terminal": ["git", "vim-enhanced", "terminator", "tilix", "htop", "btop", "zsh", "bat", "jq", "vale", "fastfetch", "direnv", "nodejs", "npm", "zoxide"],
+            "Multimedia y Utilidades": ["gimp", "google-chrome-stable", "libheif-tools", "yt-dlp", "vlc-plugins-base"],
+            "Contenedores y Nube": ["podman", "podman-compose", "buildah", "awscli2", "ansible"],
+            "Python y ML": ["python3-pip", "python3-virtualenv", "ollama"],
+            "Herramientas de Red": ["nmap", "net-tools", "tcpdump", "bind-utils"],
+            "Corporativo Red Hat": ["redhat-internal-cert-install", "redhat-internal-NetworkManager-openvpn-profiles", "scaffolding"]
+        },
+        "flatpak": {
+            "Comunicación": ["com.slack.Slack", "org.telegram.desktop", "im.riot.Riot"],
+            "Productividad": ["md.obsidian.Obsidian", "com.spotify.Client"],
+            "Desarrollo y Medios": ["com.vscodium.codium", "io.podman_desktop.PodmanDesktop", "com.obsproject.Studio", "org.videolan.VLC"]
+        }
+    }
+
+    selected_dnf = [pkg for pkgs in software_catalog["dnf"].values() for pkg in pkgs]
+    selected_flatpak = [app for apps in software_catalog["flatpak"].values() for app in apps]
+
+    print("\nEl siguiente software está preseleccionado en tu catálogo base:")
+
+    print("\n📦 PAQUETES DEL SISTEMA:")
+    for category, pkgs in software_catalog["dnf"].items():
+        print(f"  --- {category} ---")
+        for pkg in pkgs:
+            print(f"    - {pkg}")
+
+    print("\n📦 APLICACIONES FLATPAK:")
+    for category, apps in software_catalog["flatpak"].items():
+        print(f"  --- {category} ---")
+        for app in apps:
+            print(f"    - {app}")
+
+    while True:
+        while True:
+            excluir = input("\n¿Quieres EXCLUIR algún paquete/app de la lista predeterminada? (s/N): ").strip().lower()
+            if excluir in ['s', 'n', '']:
+                break
+            print("⚠️ Opción no válida. Ingresa 's' para sí, o 'n' (o Enter) para no.")
+
+        if excluir == 's':
+            item_to_remove = input("Ingresa el nombre exacto a excluir (ej. vim-enhanced o com.spotify.Client): ").strip()
+            removed = False
+            if item_to_remove in selected_dnf:
+                selected_dnf.remove(item_to_remove)
+                removed = True
+            if item_to_remove in selected_flatpak:
+                selected_flatpak.remove(item_to_remove)
+                removed = True
+
+            if removed:
+                print(f"✅ Excluido de la lista: {item_to_remove}")
+            else:
+                print(f"⚠️ '{item_to_remove}' no se encuentra en las listas.")
+        else:
+            break
+
+    while True:
+        while True:
+            agregar = input("\n¿Quieres AGREGAR algún paquete/app extra manualmente? (s/N): ").strip().lower()
+            if agregar in ['s', 'n', '']:
+                break
+            print("⚠️ Opción no válida.")
+
+        if agregar == 's':
+            extra = input("Ingresa el nombre exacto del paquete o app: ").strip()
+            tipo = input("¿Es paquete de Sistema o Flatpak? (s/f): ").strip().lower()
+            if tipo == 's':
+                if extra not in selected_dnf:
+                    selected_dnf.append(extra)
+                    print(f"✅ Añadido a Sistema: {extra}")
+                else:
+                    print("⚠️ Ya está en la lista.")
+            elif tipo == 'f':
+                if extra not in selected_flatpak:
+                    selected_flatpak.append(extra)
+                    print(f"✅ Añadido a Flatpak: {extra}")
+                else:
+                    print("⚠️ Ya está en la lista de Flatpak.")
+            else:
+                print("⚠️ Tipo no válido. Usa 's' o 'f'.")
+        else:
+            break
+
+    temp_dir_name = ".smart_backup_software"
+    temp_dir_path = os.path.join(HOME, temp_dir_name)
+    os.makedirs(temp_dir_path, exist_ok=True)
+
+    with open(os.path.join(temp_dir_path, "dnf_packages.txt"), "w") as f:
+        for p in selected_dnf:
+            f.write(f"{p}\n")
+
+    with open(os.path.join(temp_dir_path, "flatpak_apps.txt"), "w") as f:
+        for p in selected_flatpak:
+            f.write(f"{p}\n")
+
+    print(f"\n✅ Perfil de software guardado: {len(selected_dnf)} paquetes y {len(selected_flatpak)} apps Flatpak listas para empaquetar.")
+    return temp_dir_name
+
+def backup_system(dest_path):
+    software_dir = get_installed_software()
+
+    print("\n============================================================")
+    print("==> INICIANDO RESPALDO DE SISTEMA (DOTFILES + SOFTWARE)")
     print("============================================================")
 
     os.makedirs(dest_path, exist_ok=True)
+
+    # --- NUEVO: Volcar configuración de GNOME antes de empaquetar ---
+    print("\n--> Extrayendo configuraciones visuales de GNOME (dconf)...")
+    gnome_settings_path = os.path.join(HOME, ".smart_gnome_settings.ini")
+    subprocess.run(f"dconf dump / > {gnome_settings_path}", shell=True)
 
     now = datetime.datetime.now()
     tar_filename = f"perfil_{USER}_{now.strftime('%Y-%m-%d')}.tar.gz"
@@ -78,13 +191,17 @@ def backup_system(dest_path):
 
     sys_items = [
         ".bashrc", ".bash_profile", ".bash_history", ".zshrc",
-        ".ssh", "bin",
+        ".ssh", "bin", "uwufetch",
         ".gitconfig", ".git-credentials",
         ".vim", ".vimrc", ".viminfo",
         ".ansible", ".aws",
         ".ollama", ".claude", ".claude.json", ".gemini", ".continue",
         ".vale-styles", ".vale.ini",
-        ".config", ".local"
+        ".config", ".local", ".var/app", # <--- Aquí agregamos el directorio de Flatpak
+        ".npm-global",
+        ".harmattan-themes", ".harmattan-assets",
+        ".smart_gnome_interface.ini",
+        ".smart_gnome_shell.ini"
     ]
 
     to_pack = [item for item in sys_items if os.path.exists(os.path.join(HOME, item))]
@@ -166,15 +283,27 @@ def backup_system(dest_path):
 
     if confirm == 's':
         print(f"\n--> Ejecutando tar (esto tomará un momento dependiendo del tamaño)...")
-        cmd = ["tar", "-czf", tar_filepath] + to_pack
+        # Excluir la caché y las imágenes de contenedores para evitar problemas de simlinks y tamaño masivo
+        # --- NUEVO: Exclusión del llavero (keyrings) agregada al tar ---
+        cmd = ["tar", "--exclude=.local/share/containers", "--exclude=.cache", "--exclude=.local/share/keyrings", "-czf", tar_filepath] + to_pack
         subprocess.run(cmd, cwd=HOME, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
         size_mb = os.path.getsize(tar_filepath) / (1024 * 1024)
-        print(f"✅ Respaldo de sistema completado en: {dest_path}")
+        print(f"✅ Respaldo de sistema y software completado en: {dest_path}")
         print(f"   Archivo: {tar_filename} ({size_mb:.1f} MB)")
+
+        src_software = os.path.join(HOME, software_dir)
+        dst_software = os.path.join(dest_path, software_dir)
+        if os.path.exists(dst_software):
+            shutil.rmtree(dst_software)
+        shutil.copytree(src_software, dst_software)
+        print("✅ Listas de software guardadas junto al respaldo.")
     else:
         print("Operación de sistema cancelada.")
 
+    temp_dir_path = os.path.join(HOME, software_dir)
+    if os.path.exists(temp_dir_path):
+        shutil.rmtree(temp_dir_path)
 
 def backup_personal(dest_path, rsync_flags):
     print("\n============================================================")
@@ -315,9 +444,58 @@ def backup_personal(dest_path, rsync_flags):
     else:
         print("Operación cancelada.")
 
+def print_restore_instructions():
+    print("\n============================================================")
+    print("📝 INSTRUCCIONES PARA LA RESTAURACIÓN EN UN EQUIPO NUEVO")
+    print("============================================================")
+    print("Si vas a restaurar este respaldo en un equipo nuevo, recuerda:")
+    print("  1. Tu nuevo equipo debe tener montada la USB/Disco donde guardaste este respaldo.")
+    print("  2. Necesitarás tener privilegios de 'sudo' activos en el nuevo equipo.")
+    print("  3. Si vas a restaurar remotamente, recuerda abrir el puerto SSH en el firewall de tu destino:")
+    print("     $ sudo firewall-cmd --add-service=ssh --permanent && sudo firewall-cmd --reload")
+    print("  4. Transfiere de forma segura (scp) el script 'smart_restore.py' al $HOME de tu nueva máquina.")
+    print("  5. Ejecuta: 'python3 smart_restore.py' y sigue el asistente.")
+    print("============================================================\n")
+
+def backup_desktop(dest_path):
+    print("\n============================================================")
+    print("==> INICIANDO RESPALDO EXCLUSIVO DE ESCRITORIO (GNOME)")
+    print("============================================================")
+
+    os.makedirs(dest_path, exist_ok=True)
+
+    print("\n--> Extrayendo configuraciones visuales de GNOME (dconf)...")
+    gnome_settings_path = os.path.join(HOME, ".smart_gnome_settings.ini")
+    subprocess.run(f"dconf dump / > {gnome_settings_path}", shell=True)
+
+    now = datetime.datetime.now()
+    tar_filename = f"escritorio_{USER}_{now.strftime('%Y-%m-%d')}.tar.gz"
+    tar_filepath = os.path.join(dest_path, tar_filename)
+
+    sys_items = [
+        ".smart_gnome_shell.ini",
+        ".smart_gnome_interface.ini",
+        "Pictures/Wallpapers",
+        "Pictures/ProfilePic"
+        ".local/share/gnome-shell/extensions" # <--- EL INGREDIENTE SECRETO
+    ]
+
+    to_pack = [item for item in sys_items if os.path.exists(os.path.join(HOME, item))]
+
+    if not to_pack:
+        print("❌ No se encontraron configuraciones ni imágenes de escritorio.")
+        return
+
+    print(f"\n--> Ejecutando tar (empaquetando entorno visual)...")
+    cmd = ["tar", "-czf", tar_filepath] + to_pack
+    subprocess.run(cmd, cwd=HOME, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+
+    size_mb = os.path.getsize(tar_filepath) / (1024 * 1024)
+    print(f"✅ Respaldo de escritorio completado en: {dest_path}")
+    print(f"   Archivo: {tar_filename} ({size_mb:.2f} MB)")
 
 def main():
-    print("==> Iniciando Smart Backup v4.1 (PRODUCCIÓN FINAL)")
+    print("==> Iniciando Smart Backup v5.2 (PRODUCCIÓN FINAL)")
 
     dest_dir = input("\nIntroduce la ruta del disco externo (ej. /run/media/TU_USUARIO/TU_DISCO): ").strip()
     if not os.path.isdir(dest_dir):
@@ -340,12 +518,13 @@ def main():
     print("  1) [P]ersonal (Busca, mueve y limpia archivos pesados)")
     print("  2) [S]istema  (Empaqueta tus dotfiles esenciales en un .tar.gz)")
     print("  3) [C]ompleto (Ejecuta Personal primero, y luego Sistema)")
+    print("  4) [E]scritorio (Solo personalización visual: fondos, temas, extensiones)")
 
     while True:
-        mode = input("Opción [P/S/C]: ").strip().lower()
-        if mode in ['p', 's', 'c']:
+        mode = input("Opción [P/S/C/E]: ").strip().lower()
+        if mode in ['p', 's', 'c', 'e']:
             break
-        print("⚠️ Opción no válida. Ingresa 'p', 's' o 'c'.")
+        print("⚠️ Opción no válida. Ingresa 'p', 's', 'c' o 'e'.")
 
     if mode == 'c':
         full_backup_dir = get_archive_dir(dest_dir, "FullBackup")
@@ -358,8 +537,12 @@ def main():
     elif mode == 's':
         system_dir = get_archive_dir(dest_dir, "SystemBackup")
         backup_system(system_dir)
+    elif mode == 'e':
+        desktop_dir = get_archive_dir(dest_dir, "DesktopBackup")
+        backup_desktop(desktop_dir)
 
     print("\n🎉 Todas las operaciones solicitadas han finalizado. Puedes revisar tu disco externo.")
+    print_restore_instructions()
 
 if __name__ == "__main__":
     main()
