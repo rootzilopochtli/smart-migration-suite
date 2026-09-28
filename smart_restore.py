@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 #
-# smart_restore.py - Restauración Modular v1.1
-# Autor: Alex Callejas
+# smart_restore.py - Orquestador de Restauración (Smart Migration Suite)
+# Autor: Alex Callejas (@rootzilopochtli)
+# Descripción: Restaura entornos de trabajo, dotfiles, software y configuraciones
+#              de GNOME de forma resiliente, diseñada para evadir bloqueos en
+#              entornos corporativos administrados (MDM / Ansible).
 #
 
 import os
@@ -15,17 +18,24 @@ RESTORE_LOG = ["============================================================",
                "       RESUMEN DE RESTAURACIÓN - SMART RESTORE",
                "============================================================"]
 
+# ==============================================================================
+# FUNCIONES UTILITARIAS Y DE SISTEMA BASE
+# ==============================================================================
+
 def log_append(section, details):
+    """Agrega entradas al log clínico de restauración."""
     RESTORE_LOG.append(f"\n--- {section} ---")
     RESTORE_LOG.append(details)
 
 def save_log():
+    """Guarda el log en el $HOME al finalizar la ejecución."""
     log_path = os.path.join(HOME, ".smart_restore_summary.log")
     with open(log_path, "w") as f:
         f.write("\n".join(RESTORE_LOG) + "\n")
     return log_path
 
 def cache_sudo(dry_run=False):
+    """Solicita credenciales de sudo al inicio para que el script corra sin interrupciones."""
     if dry_run:
         print("\n[DRY-RUN] Se ejecutaría: sudo -v (para cachear credenciales)")
         return
@@ -38,6 +48,7 @@ def cache_sudo(dry_run=False):
         sys.exit(1)
 
 def configure_hostname(dry_run=False):
+    """Permite reconfigurar el hostname de la máquina destino."""
     current_hostname = socket.gethostname()
     print("\n============================================================")
     print("==> CONFIGURACIÓN DE IDENTIDAD")
@@ -63,6 +74,7 @@ def configure_hostname(dry_run=False):
             print(" -> Hostname en blanco, omitiendo.")
 
 def configure_timezone(dry_run=False):
+    """Permite configurar la zona horaria del sistema de forma dinámica."""
     print("\n============================================================")
     print("==> CONFIGURACIÓN DE ZONA HORARIA")
     print("============================================================")
@@ -75,23 +87,28 @@ def configure_timezone(dry_run=False):
     print(f"La zona horaria actual es: {current_tz}")
 
     while True:
-        ans = input("¿Deseas configurarla a 'America/Mexico_City'? (s/N): ").strip().lower()
+        ans = input("¿Deseas cambiar la zona horaria? (s/N): ").strip().lower()
         if ans in ['s', 'n', '']:
             break
         print("⚠️ Opción no válida.")
 
     if ans == 's':
-        if dry_run:
-            print("[DRY-RUN] Se ejecutaría: sudo timedatectl set-timezone America/Mexico_City")
+        new_tz = input("Ingresa la nueva zona horaria (ej. America/Mexico_City, Europe/Madrid): ").strip()
+        if new_tz:
+            if dry_run:
+                print(f"[DRY-RUN] Se ejecutaría: sudo timedatectl set-timezone {new_tz}")
+            else:
+                try:
+                    subprocess.run(["sudo", "timedatectl", "set-timezone", new_tz], check=True)
+                    print(f"✅ Zona horaria actualizada a {new_tz}.")
+                    log_append("Zona Horaria", f"Actualizada a {new_tz}")
+                except subprocess.CalledProcessError:
+                    print(f"❌ Error al intentar cambiar la zona horaria a '{new_tz}'. Verifica el formato.")
         else:
-            try:
-                subprocess.run(["sudo", "timedatectl", "set-timezone", "America/Mexico_City"], check=True)
-                print("✅ Zona horaria actualizada a America/Mexico_City.")
-                log_append("Zona Horaria", "Actualizada a America/Mexico_City")
-            except subprocess.CalledProcessError:
-                print("❌ Error al intentar cambiar la zona horaria.")
+            print(" -> Entrada en blanco, omitiendo.")
 
 def select_backup_file():
+    """Busca interactivamente archivos .tar.gz generados por smart_backup.py."""
     print("\n============================================================")
     print("==> BÚSQUEDA DE RESPALDOS")
     print("============================================================")
@@ -147,12 +164,13 @@ def select_backup_file():
             continue
 
 def prepare_environment(tar_path, dry_run=False):
+    """Valida espacio en disco y recrea la estructura de carpetas base del usuario."""
     print("\n============================================================")
     print("==> VALIDANDO ESPACIO Y CREANDO DIRECTORIOS")
     print("============================================================")
 
     tar_size = os.path.getsize(tar_path)
-    estimated_needed = tar_size * 2.5
+    estimated_needed = tar_size * 2.5 # Estimación heurística de descompresión
     free_space = shutil.disk_usage(HOME).free
 
     print(f"📦 Tamaño del archivo comprimido: {tar_size / (1024*1024):.1f} MB")
@@ -165,6 +183,8 @@ def prepare_environment(tar_path, dry_run=False):
     print("✅ Espacio suficiente validado.")
 
     print("\n -> Creando estructura base de directorios...")
+
+    # [!] USUARIO: Modifica estos directorios base según tu flujo de trabajo habitual
     directorios = ["Devel", "Documents/Work", "Documents/Personal"]
 
     for d in directorios:
@@ -177,6 +197,10 @@ def prepare_environment(tar_path, dry_run=False):
 
     log_append("Entorno", f"Validación de espacio exitosa. Archivo fuente: {tar_path}")
     return True
+
+# ==============================================================================
+# MÓDULOS DE APROVISIONAMIENTO Y RESTAURACIÓN
+# ==============================================================================
 
 def get_pkg_manager():
     """Detecta el gestor de paquetes base según la distribución de Linux."""
@@ -191,6 +215,11 @@ def get_pkg_manager():
     return pm_cmd
 
 def install_software(tar_path, dry_run=False):
+    """
+    Lee los manifiestos de software e instala paquetes.
+    Implementa "Fail-Loud": Si un paquete corporativo está bloqueado o no existe,
+    no aborta el script, lo aísla y lo reporta al final de la ejecución.
+    """
     print("\n============================================================")
     print("==> INSTALACIÓN DE SOFTWARE (APROVISIONAMIENTO)")
     print("============================================================")
@@ -201,7 +230,7 @@ def install_software(tar_path, dry_run=False):
     sys_pkg_file = os.path.join(software_dir, "dnf_packages.txt")
     flatpak_file = os.path.join(software_dir, "flatpak_apps.txt")
 
-    missing_pkgs = [] # <--- Acumulador global de paquetes perdidos
+    missing_pkgs = [] # Acumulador global de paquetes perdidos o bloqueados por políticas
 
     if not os.path.exists(software_dir):
         print("⚠️ No se encontraron listas de software junto al respaldo. Saltando instalación.")
@@ -225,6 +254,7 @@ def install_software(tar_path, dry_run=False):
                     result = subprocess.run(cmd_pkg, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
                     output = result.stdout
 
+                    # Capturamos paquetes huérfanos o bloqueados por repositorios corporativos
                     for line in output.split('\n'):
                         if "No match for argument:" in line or "Unable to locate package" in line:
                             missing_pkgs.append(line.split(':')[-1].strip() if ":" in line else line.split()[-1].strip())
@@ -234,7 +264,7 @@ def install_software(tar_path, dry_run=False):
                         log_append("Software (Sistema)", f"Instalación exitosa.\nPaquetes: {', '.join(sys_pkgs)}")
                     else:
                         print("⚠️ La instalación terminó, pero algunos paquetes no se encontraron. Revisa el log.")
-                        log_append("Software (Sistema)", f"Instalación finalizada con paquetes faltantes.\n\nPaquetes solicitados: {', '.join(sys_pkgs)}\n\nPaquetes NO encontrados:\n{chr(10).join([' - ' + p for p in missing_pkgs])}\n\nDetalle de ejecución de DNF:\n{output.strip()}")
+                        log_append("Software (Sistema)", f"Instalación finalizada con paquetes faltantes.\n\nPaquetes solicitados: {', '.join(sys_pkgs)}\n\nPaquetes NO encontrados:\n{chr(10).join([' - ' + p for p in missing_pkgs])}\n\nDetalle de ejecución de DNF/APT:\n{output.strip()}")
 
                 except Exception as e:
                     print("❌ Error crítico durante la instalación de paquetes del sistema.")
@@ -271,11 +301,15 @@ def install_software(tar_path, dry_run=False):
     return True, missing_pkgs
 
 def extract_backup(tar_path, dry_run=False):
+    """
+    Extracción idempotente de dotfiles.
+    Ignora errores fatales causados por sobreescritura de archivos de solo lectura
+    (ej. llaves SSH o repositorios Git) para asegurar la continuidad del despliegue.
+    """
     print("\n============================================================")
     print("==> RESTAURACIÓN DEL PERFIL Y DOTFILES")
     print("============================================================")
 
-    # Quitamos --unlink-first para no romper directorios con contenido
     cmd = ["tar", "--overwrite", "-xzf", tar_path, "-C", HOME]
 
     if dry_run:
@@ -292,13 +326,13 @@ def extract_backup(tar_path, dry_run=False):
         log_append("Descompresión (tar)", "Éxito al extraer sin errores.")
         return True
     else:
-        # Volvemos el error no-fatal para permitir que el script termine
         print("⚠️ Hubo advertencias al descomprimir (conflictos de permisos en archivos preexistentes).")
         print("   La mayoría de los archivos se restauraron. Continuando...")
         log_append("Descompresión (tar)", f"Finalizó con advertencias (Código {result.returncode}).\nEsto es común al sobreescribir llaves SSH o repositorios Git.\nSalida de error:\n{result.stderr}")
-        return True # <-- Forzamos el True para que continúe hacia la configuración
+        return True # Forzamos True para mantener la idempotencia y continuar el despliegue
 
 def restore_personal_archive(tar_path, dry_run=False):
+    """Detecta y restaura archivos personales pesados si existen junto al respaldo base."""
     print("\n============================================================")
     print("==> RESTAURANDO ARCHIVO PERSONAL")
     print("============================================================")
@@ -325,11 +359,16 @@ def restore_personal_archive(tar_path, dry_run=False):
     return True
 
 def configure_desktop(dry_run=False):
+    """
+    Cirugía Quirúrgica de GNOME:
+    Inyecta exclusivamente configuraciones de Shell e Interfaz.
+    Evita cargar la raíz completa (/) para no colisionar con políticas corporativas
+    de seguridad bloqueadas por MDM (como banners de login o bloqueos de pantalla).
+    """
     print("\n============================================================")
     print("==> PERSONALIZACIÓN DE ESCRITORIO (GNOME)")
     print("============================================================")
 
-    # --- NUEVO: Carga quirúrgica de configuraciones permitidas ---
     dconf_paths = [
         (".smart_gnome_shell.ini", "/org/gnome/shell/"),
         (".smart_gnome_interface.ini", "/org/gnome/desktop/interface/")
@@ -350,6 +389,7 @@ def configure_desktop(dry_run=False):
 
     log_append("GNOME dconf", "Configuraciones visuales inyectadas (Shell e Interfaz).")
 
+    # Restauración de Wallpapers y Foto de perfil (Requiere que las imágenes existan en el tar)
     wallpaper_dir = os.path.join(HOME, "Pictures", "Wallpapers")
     profile_dir = os.path.join(HOME, "Pictures", "ProfilePic")
 
@@ -435,8 +475,12 @@ def configure_desktop(dry_run=False):
 
     return True
 
+# ==============================================================================
+# ENTRY POINT
+# ==============================================================================
+
 def main():
-    print("==> Iniciando Smart Restore v1.1")
+    print("==> Iniciando Smart Restore (Migration Suite)")
 
     while True:
         mode = input("\n¿Deseas ejecutar en modo Simulación (Dry-Run)? No se harán cambios reales. (S/n): ").strip().lower()
@@ -469,12 +513,12 @@ def main():
             log_file = save_log()
             print(f"\n⚠️ La restauración visual finalizó con errores. Revisa el log en: {log_file}")
 
-    else: # <--- ESTE ES EL BLOQUE QUE FALTABA
+    else:
         if not prepare_environment(tar_path, dry_run=is_dry_run):
             save_log()
             sys.exit(1)
 
-        # --- CORRECCIÓN DE DESEMPAQUETADO ---
+        # Orquestación de Software y captura de paquetes faltantes (Fail-Loud)
         status_sw, missing_pkgs = install_software(tar_path, dry_run=is_dry_run)
         if not status_sw:
             print("⚠️ Ocurrió un problema instalando el software, pero continuaremos con la extracción.")
@@ -489,6 +533,7 @@ def main():
             print("="*60)
             print(f"📄 Revisa el resumen detallado clínico en: {log_file}")
 
+            # Banner de Cumplimiento: Informar sobre discrepancias de políticas
             if missing_pkgs:
                 print("\n📦 PAQUETES NO INSTALADOS (Requieren revisión manual o incumplen políticas):")
                 for pkg in missing_pkgs:
