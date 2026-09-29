@@ -532,7 +532,7 @@ def main():
     except Exception:
         fs_type = "unknown"
 
-    rsync_flags = "-avh"
+    rsync_flags = "-arvh"
     if fs_type in ["exfat", "vfat", "fuseblk", "ntfs"]:
         print(f"ℹ️  Sistema de archivos '{fs_type}' (Windows) detectado. Usando banderas de compatibilidad.")
         rsync_flags = "-rtvh" # Omitimos preservar usuarios/grupos que causarían error
